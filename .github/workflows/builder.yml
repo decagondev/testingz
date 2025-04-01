@@ -1,0 +1,85 @@
+name: Package and Release App with InstallBuilder
+
+on:
+  push:
+    branches:
+      - packaging
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set Up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Extract Version from package.json
+        id: package_version
+        run: echo "VERSION=$(jq -r '.version' package.json)" >> $GITHUB_ENV
+
+      - name: Build Vite React Electron App
+        run: npm run build
+
+      - name: Install Electron Builder
+        run: npm install -g electron-builder
+
+      - name: Package Electron App
+        run: electron-builder --${{ matrix.os == 'ubuntu-latest' && 'linux' || matrix.os == 'macos-latest' && 'mac' || 'win' }}
+
+      - name: Install InstallBuilder (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          curl -L -o installbuilder.run "https://downloads.bitrock.com/installbuilder/installbuilder-23.7.0-linux-x64.run"
+          chmod +x installbuilder.run
+          sudo ./installbuilder.run --mode unattended
+
+      - name: Install InstallBuilder (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          Invoke-WebRequest -Uri "https://downloads.bitrock.com/installbuilder/installbuilder-23.7.0-windows.exe" -OutFile "installbuilder.exe"
+          Start-Process -Wait -FilePath "installbuilder.exe" -ArgumentList "--mode unattended"
+
+      - name: Run InstallBuilder to Package App
+        run: >
+          installbuilder build ./installbuilder.xml --platform=${{ matrix.os == 'ubuntu-latest' && 'linux' || matrix.os == 'macos-latest' && 'mac' || 'win' }}
+
+      - name: Upload Installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-installer-${{ matrix.os }}
+          path: ./output/*.exe, ./output/*.dmg, ./output/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Installers
+        uses: actions/download-artifact@v4
+        with:
+          path: ./installers
+
+      - name: Extract Version from package.json
+        id: package_version
+        run: echo "VERSION=$(jq -r '.version' package.json)" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v${{ env.VERSION }} ./installers/* \
+            --title "Release v${{ env.VERSION }}" \
+            --notes "Auto-generated release for version v${{ env.VERSION }}"
